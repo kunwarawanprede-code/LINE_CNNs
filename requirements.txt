@@ -1,3 +1,6 @@
 flask
 gunicorn
 line-bot-sdk
+tensorflow
+pillow
+numpy
