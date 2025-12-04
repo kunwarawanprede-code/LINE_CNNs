@@ -7,8 +7,8 @@ import os
 app = Flask(__name__)
 
 # ดึงค่า TOKEN / SECRET จากตัวแปรสภาพแวดล้อม (เดี๋ยวไปใส่ใน Render)
-CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+CHANNEL_ACCESS_TOKEN = os.getenv("iREsvpzCRyS7EldzM5P4JhEShiubs6OMPyJpI+B25+twZGFzdZJsmMesUY8xNAbhDCxf/6SEp7QaLc32POCol+YGd1AM5HVoskCCQggWKLI5xa9jYnvj9sop2XKl5XXz8fYHzWnJ5O/EL6TyKF/uHQdB04t89/1O/w1cDnyilFU=")
+CHANNEL_SECRET = os.getenv("159e482291bafbd19f4e42b0c0f0e1b5")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
