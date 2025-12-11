@@ -1,78 +1,82 @@
-from flask import Flask, request, abort
+  from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
 import os
+import tempfile
+import numpy as np
+from tensorflow.keras.models import load_model
+from PIL import Image
 
-# สร้าง Flask app
 app = Flask(__name__)
 
-# -----------------------------
-# อ่าน TOKEN / SECRET จาก Environment ของ Render
-# -----------------------------
+# ====== โหลด TOKEN / SECRET ======
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
-# ถ้าอ่านค่าไม่ได้ ให้ขึ้น error ชัด ๆ เลย
-if CHANNEL_ACCESS_TOKEN is None:
-    raise ValueError(
-        "CHANNEL_ACCESS_TOKEN is not set. Check Environment Variables on Render."
-    )
-
-if CHANNEL_SECRET is None:
-    raise ValueError(
-        "CHANNEL_SECRET is not set. Check Environment Variables on Render."
-    )
-
-# สร้างตัวเชื่อมกับ LINE
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# -----------------------------
-# route สำหรับเช็คว่า server ยังอยู่ดี (Render health check)
-# -----------------------------
+# ====== โหลดโมเดล ======
+model = load_model("best_cnn_xray_E40.keras")
+
+# Preprocess ฟังก์ชัน
+def preprocess_image(path):
+    img = Image.open(path).convert("L")  
+    img = img.resize((224, 224))      
+    img = np.array(img) / 255.0      
+    img = img.reshape(1, 224, 224, 1) 
+    return img
+
+
 @app.route("/", methods=["GET"])
 def home():
-    return "OK"
+    return "OK", 200
 
 
-# -----------------------------
-# route ที่ LINE ยิง webhook มาหาเรา
-# -----------------------------
+# ====== Webhook จาก LINE ======
 @app.route("/callback", methods=["POST"])
 def callback():
-    # 1) อ่านลายเซ็นจาก header
     signature = request.headers.get("X-Line-Signature", "")
-
-    # 2) อ่าน body (ข้อมูล event จาก LINE)
     body = request.get_data(as_text=True)
 
-    # 3) ให้ handler ตรวจและกระจาย event
     try:
         handler.handle(body, signature)
     except Exception as e:
-        # ถ้า token/secret ผิด หรือเซ็นไม่ตรง → 400
         print("webhook error:", e)
+        abort(400)
 
-    return "OK" , 200
+    return "OK", 200
 
 
-# -----------------------------
-# ฟังก์ชันตอบข้อความแบบง่าย ๆ (echo text)
-# ถ้ามีข้อความอะไรเข้ามา จะตอบกลับข้อความเดิม
-# -----------------------------
+# ====== รับข้อความ (Echo) ======
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # ตัวอย่าง: ตอบกลับข้อความเดิมไปก่อน
-    incoming_text = event.message.text
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=incoming_text)
-    )
+    received_text = event.message.text
+    reply = f"คุณพิมพ์ว่า: {received_text}"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 
-# ส่วนนี้ไว้รันบนเครื่องเราเอง (ไม่กระทบ Render)
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# ====== รับรูป X-ray ======
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    # ดาวน์โหลดรูปจาก LINE
+    message_id = event.message.id
+    message_content = line_bot_api.get_message_content(message_id)
+
+    with tempfile.NamedTemporaryFile(delete=False) as temp:
+        for chunk in message_content.iter_content():
+            temp.write(chunk)
+        temp_path = temp.name
+
+    # Preprocess
+    img = preprocess_image(temp_path)
+    pred = model.predict(img)
+    class_id = np.argmax(pred)
+
+    classes = ["Normal", "Pneumonia", "Tuberculosis"]
+    result = classes[class_id]
+
+    # ส่งผลกลับ LINE
+    reply_text = f"ผลวินิจฉัยจากภาพ X-ray: {result}"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
