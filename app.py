@@ -1,6 +1,6 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError, LineBotApiError
+from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
 import os
 import tempfile
@@ -20,7 +20,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # ====== โหลดโมเดล ======
 model = load_model("best_cnn_xray_E40.keras")
 
-# ====== ฟังก์ชัน Preprocess รูป X-ray ======
+# ====== ฟังก์ชัน preprocess รูป X-ray ======
 def preprocess_image(path):
     # แปลงเป็นขาวดำ
     img = Image.open(path).convert("L")
@@ -41,19 +41,12 @@ def home():
 # ====== Webhook จาก LINE ======
 @app.route("/callback", methods=["POST"])
 def callback():
-    # 1) อ่าน signature จาก header
     signature = request.headers.get("X-Line-Signature", "")
-    # 2) อ่าน body (ข้อมูล event จาก LINE)
     body = request.get_data(as_text=True)
-
-    # debug ดู event ที่วิ่งเข้ามา
-    print("===== Webhook Body =====")
-    print(body)
 
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        print("Invalid signature. Check CHANNEL_SECRET หรือ Webhook URL ให้ถูก")
         abort(400)
     except Exception as e:
         print("webhook error:", e)
@@ -62,70 +55,67 @@ def callback():
     return "OK", 200
 
 
-# ====== รับข้อความ (Echo) ======
+# ====== รับข้อความ (echo ธรรมดา) ======
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    # ไม่ตอบ event ทดสอบจาก LINE (ตอนกด Verify)
+def handle_text(event):
+    # ไม่ตอบตอน LINE ส่ง event ทดสอบ (เวลา Verify)
     if event.reply_token in (
         "00000000000000000000000000000000",
         "ffffffffffffffffffffffffffffffff",
     ):
-        return
+        return "OK"
 
-    user_id = event.source.user_id
-    received_text = event.message.text
-    reply = f"คุณพิมพ์ว่า: {received_text}"
-
-    try:
-        # ใช้ push_message แทน reply_message เพื่อตัดปัญหา reply token
-        line_bot_api.push_message(
-            user_id,
-            TextSendMessage(text=reply)
-        )
-    except LineBotApiError as e:
-        print("Reply error (text):", e.status_code, e.error.message, e.error.details)
+    reply = f"คุณพิมพ์ว่า: {event.message.text}"
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=reply)
+    )
 
 
-# ====== รับรูป X-ray ======
+# ====== รับรูป X-ray แล้วทำนาย + แสดงเปอร์เซ็นต์ ======
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    # กันไม่ให้ error ตอน Verify / ทดสอบ
-    if event.reply_token in (
-        "00000000000000000000000000000000",
-        "ffffffffffffffffffffffffffffffff",
-    ):
-        return
-
-    user_id = event.source.user_id
-
-    # ดาวน์โหลดรูปจาก LINE
-    message_id = event.message.id
-    message_content = line_bot_api.get_message_content(message_id)
-
-    # เซฟเป็นไฟล์ชั่วคราว
-    with tempfile.NamedTemporaryFile(delete=False) as temp:
-        for chunk in message_content.iter_content():
-            temp.write(chunk)
-        temp_path = temp.name
-
-    # Preprocess รูปและทำนาย
     try:
+        # 1) ดาวน์โหลดรูปจาก LINE
+        message_id = event.message.id
+        content = line_bot_api.get_message_content(message_id)
+
+        # 2) เซฟเป็นไฟล์ชั่วคราว
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
+            for chunk in content.iter_content():
+                tf.write(chunk)
+            temp_path = tf.name
+
+        # 3) เตรียมภาพ
         img = preprocess_image(temp_path)
-        pred = model.predict(img)
-        class_id = int(np.argmax(pred))
 
+        # 4) ทำนายผลจากโมเดล
+        pred = model.predict(img)[0]          # ได้ array เช่น [0.1, 0.7, 0.2]
         classes = ["Normal", "Pneumonia", "Tuberculosis"]
-        result = classes[class_id]
-        reply_text = f"ผลวินิจฉัยจากภาพ X-ray: {result}"
-    except Exception as e:
-        print("Model/predict error:", e)
-        reply_text = "ขอโทษค่ะ ระบบวิเคราะห์ภาพมีปัญหา ลองใหม่อีกครั้งนะ"
 
-    # ส่งผลกลับ LINE (ใช้ push)
-    try:
-        line_bot_api.push_message(
-            user_id,
-            TextSendMessage(text=reply_text)
-        )
-    except LineBotApiError as e:
-        print("Reply error (image):", e.status_code, e.error.message, e.error.details)
+        # แปลงเป็นเปอร์เซ็นต์ (เผื่อ model ไม่ softmax ก็ยังดูเป็นสัดส่วนได้)
+        probs = pred / np.sum(pred)
+        probs = probs * 100.0
+
+        # index ของ class ที่โอกาสมากที่สุด
+        best_idx = int(np.argmax(probs))
+        best_class = classes[best_idx]
+        best_prob = float(probs[best_idx])
+
+        # 5) สร้างข้อความตอบกลับ
+        lines = ["ผลวินิจฉัยจากภาพ X-ray (เปอร์เซ็นต์ความน่าจะเป็น):"]
+        for cls, p in zip(classes, probs):
+            lines.append(f"- {cls}: {p:.2f}%")
+
+        lines.append("")
+        lines.append(f"สรุป: มีโอกาสเป็น \"{best_class}\" สูงที่สุด ({best_prob:.2f}%)")
+        lines.append("")
+        lines.append("※ เป็นการวิเคราะห์เบื้องต้นจากโมเดล AI เท่านั้น ไม่สามารถใช้แทนการวินิจฉัยของแพทย์ได้")
+
+        reply_text = "\n".join(lines)
+
+    except Exception as e:
+        print("IMAGE ERROR:", e)
+        reply_text = "ขอโทษค่ะ ระบบวิเคราะห์ภาพมีปัญหา ลองส่งใหม่อีกครั้งนะคะ"
+
+    # 6) ส่งข้อความกลับไป
