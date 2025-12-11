@@ -4,53 +4,75 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
 
+# สร้าง Flask app
 app = Flask(__name__)
 
-# ดึงค่า TOKEN / SECRET จากตัวแปรสภาพแวดล้อม (เดี๋ยวไปใส่ใน Render)
-CHANNEL_ACCESS_TOKEN = os.getenv("iREsvpzCRyS7EldzM5P4JhEShiubs6OMPyJpI+B25+twZGFzdZJsmMesUY8xNAbhDCxf/6SEp7QaLc32POCol+YGd1AM5HVoskCCQggWKLI5xa9jYnvj9sop2XKl5XXz8fYHzWnJ5O/EL6TyKF/uHQdB04t89/1O/w1cDnyilFU=")
-CHANNEL_SECRET = os.getenv("159e482291bafbd19f4e42b0c0f0e1b5")
+# -----------------------------
+# อ่าน TOKEN / SECRET จาก Environment ของ Render
+# -----------------------------
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
+# ถ้าอ่านค่าไม่ได้ ให้ขึ้น error ชัด ๆ เลย
+if CHANNEL_ACCESS_TOKEN is None:
+    raise ValueError(
+        "CHANNEL_ACCESS_TOKEN is not set. Check Environment Variables on Render."
+    )
+
+if CHANNEL_SECRET is None:
+    raise ValueError(
+        "CHANNEL_SECRET is not set. Check Environment Variables on Render."
+    )
+
+# สร้างตัวเชื่อมกับ LINE
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-
+# -----------------------------
+# route สำหรับเช็คว่า server ยังอยู่ดี (Render health check)
+# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "OK"   # ให้ Render เช็คสุขภาพได้
+    return "OK"
 
 
-@app.route("/callback", methods=['POST'])
+# -----------------------------
+# route ที่ LINE ยิง webhook มาหาเรา
+# -----------------------------
+@app.route("/callback", methods=["POST"])
 def callback():
-    # รับลายเซ็นจาก header
-    signature = request.headers.get('X-Line-Signature', '')
+    # 1) อ่านลายเซ็นจาก header
+    signature = request.headers.get("X-Line-Signature", "")
 
-    # รับ body (ข้อมูล event จาก LINE)
+    # 2) อ่าน body (ข้อมูล event จาก LINE)
     body = request.get_data(as_text=True)
 
+    # 3) ให้ handler ตรวจและกระจาย event
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        # ถ้า token/secret ผิด หรือเซ็นไม่ตรง → 400
         abort(400)
 
-    return 'OK'
+    return "OK"
 
 
-# เมื่อมีข้อความเข้ามา
+# -----------------------------
+# ฟังก์ชันตอบข้อความแบบง่าย ๆ (echo text)
+# ถ้ามีข้อความอะไรเข้ามา จะตอบกลับข้อความเดิม
+# -----------------------------
 @handler.add(MessageEvent, message=TextMessage)
-def handle_text_message(event):
-    user_text = event.message.text.strip().lower()
-
-    if user_text in ["hi", "hello", "สวัสดี"]:
-        reply = "สวัสดีค่าา 👋 ส่งรูป X-ray มาในอนาคตได้ เดี๋ยวหนูจะช่วยวิเคราะห์ให้ 🩻"
-    else:
-        reply = "ตอนนี้เป็นบอทตัวทดลองอยู่ค่ะ พิมพ์ว่า “สวัสดี” ดูได้เลย 😊"
+def handle_message(event):
+    # ตัวอย่าง: ตอบกลับข้อความเดิมไปก่อน
+    incoming_text = event.message.text
 
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=reply)
+        TextSendMessage(text=incoming_text)
     )
 
 
+# ส่วนนี้ไว้รันบนเครื่องเราเอง (ไม่กระทบ Render)
 if __name__ == "__main__":
-    # เวลา run บนเครื่องตัวเอง
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
