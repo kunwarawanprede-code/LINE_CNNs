@@ -50,11 +50,11 @@ def callback():
     # 3) ให้ handler ตรวจและกระจาย event
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError:
+    except Exception as e:
         # ถ้า token/secret ผิด หรือเซ็นไม่ตรง → 400
-        abort(400)
+        print("webhook error:", e)
 
-    return "OK"
+    return "OK" , 200
 
 
 # -----------------------------
