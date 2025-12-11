@@ -1,96 +1,108 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
+from linebot.models import (
+    MessageEvent,
+    TextMessage,
+    TextSendMessage,
+    ImageMessage,
+)
 import os
 import tempfile
 import numpy as np
 from tensorflow.keras.models import load_model
 from PIL import Image
 
+# -----------------------------
+# สร้าง Flask app
+# -----------------------------
 app = Flask(__name__)
 
-# ================== โหลด TOKEN / SECRET จาก Environment ==================
+# -----------------------------
+# โหลด TOKEN / SECRET จาก Environment Variables (ตั้งใน Render แล้ว)
+# -----------------------------
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
-print("CHANNEL_ACCESS_TOKEN is None? ->", CHANNEL_ACCESS_TOKEN is None)
-print("CHANNEL_SECRET is None? ->", CHANNEL_SECRET is None)
+if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
+    print("ERROR: CHANNEL_ACCESS_TOKEN หรือ CHANNEL_SECRET ไม่มีค่าใน Environment !!")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# ================== โหลดโมเดล ==================
-# ต้องมีไฟล์ชื่อ best_cnn_xray_E40.keras อยู่ใน repo เดียวกับ app.py
-print("Loading model ...")
+# -----------------------------
+# โหลดโมเดลที่เซฟไว้ใน GitHub (Render จะดึงมาด้วยเวลาดึง repo)
+# -----------------------------
+# ชื่อไฟล์ต้องตรงกับไฟล์ใน repo เช่น best_cnn_xray_E40.keras
 model = load_model("best_cnn_xray_E40.keras")
-print("Model loaded OK")
 
-# ================== ฟังก์ชันเตรียมรูป (Preprocess) ==================
+# -----------------------------
+# ฟังก์ชัน Preprocess รูป X-ray ให้ตรงกับที่โมเดลต้องการ
+# ตอนนี้โมเดลต้องการ input ขนาด (224, 224, 3) = RGB
+# -----------------------------
 def preprocess_image(path):
-    # เปิดรูป
-    img = Image.open(path)
-    print("Original image mode:", img.mode)
+    # เปิดภาพเป็น RGB (3 ช่องสี) เพราะโมเดลต้องการ 3-channel
+    img = Image.open(path).convert("RGB")
 
-    # บังคับให้เป็น RGB ก่อน แล้วค่อยแปลงเป็นขาวดำ (L)
-    img = img.convert("RGB")
-    img = img.convert("L")
-    img = img.resize((224, 224))  # ให้ตรงกับตอนเทรน
+    # ปรับขนาดภาพให้ตรงกับตอนเทรน
+    img = img.resize((224, 224))
 
-    arr = np.array(img).astype("float32") / 255.0
-    print("Image array shape before reshape:", arr.shape)
+    # แปลงเป็น array และ normalize ให้อยู่ในช่วง 0-1
+    img = np.array(img) / 255.0
 
-    # เพิ่มมิติให้เป็น (1, 224, 224, 1)
-    arr = arr.reshape(1, 224, 224, 1)
-    print("Image array shape after reshape:", arr.shape)
+    # เพิ่มมิติ batch ให้เป็น (1, 224, 224, 3)
+    img = img.reshape(1, 224, 224, 3)
 
-    return arr
+    return img
 
 
-# ================== หน้าเช็คว่า server ยังอยู่ ==================
+# -----------------------------
+# route สำหรับเช็คว่า server ยังอยู่ดี (Render health check)
+# เปิดใน browser: https://line-cnns-1.onrender.com/
+# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
     return "OK", 200
 
 
-# ================== Webhook จาก LINE ==================
+# -----------------------------
+# Webhook ที่ LINE จะยิงมาหาเรา
+# -----------------------------
 @app.route("/callback", methods=["POST"])
 def callback():
     # 1) อ่าน signature จาก header
     signature = request.headers.get("X-Line-Signature", "")
+
     # 2) อ่าน body (ข้อมูล event จาก LINE)
     body = request.get_data(as_text=True)
 
-    print("Request body:", body)
-
+    # 3) ให้ handler ตรวจและกระจาย event
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError as e:
-        print("InvalidSignatureError:", e)
+    except InvalidSignatureError:
+        print("Invalid signature. Check CHANNEL_SECRET/LINE header.")
         abort(400)
     except Exception as e:
-        print("Callback error:", e)
-        abort(500)
+        print("webhook error:", e)
+        abort(400)
 
     return "OK", 200
 
 
-# ================== รับข้อความตัวอักษร ==================
+# =============================
+# Handler: ข้อความตัวอักษร (echo กลับไป)
+# =============================
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    # ไม่ตอบ event ทดสอบจากหน้า Verify ของ LINE
+def handle_text_message(event):
+    # ไม่ตอบ event ทดสอบจาก LINE (ตอนกด Verify)
     if event.reply_token in (
         "00000000000000000000000000000000",
         "ffffffffffffffffffffffffffffffff",
     ):
         return
 
-    text = event.message.text.strip()
-
-    if text.lower() in ["hi", "hello", "สวัสดี"]:
-        reply = "สวัสดีค่ะ ✨ ส่งภาพ X-ray มาแล้วหนูจะช่วยทำนายให้นะคะ"
-    else:
-        reply = f"คุณพิมพ์ว่า: {text}\nหากต้องการให้ช่วยวิเคราะห์ภาพ X-ray ให้ส่งรูปมาได้เลยค่ะ 😊"
+    user_text = event.message.text
+    reply = f"คุณพิมพ์ว่า: {user_text}"
 
     line_bot_api.reply_message(
         event.reply_token,
@@ -98,18 +110,22 @@ def handle_message(event):
     )
 
 
-# ================== รับรูปภาพ X-ray ==================
+# =============================
+# Handler: รับรูป X-ray แล้วให้โมเดลทำนาย
+# =============================
 @handler.add(MessageEvent, message=ImageMessage)
-def handle_image(event):
-    print("===== IMAGE EVENT RECEIVED =====")
+def handle_image_message(event):
+    # ไม่ตอบ event ทดสอบจาก LINE เช่นตอน Verify
+    if event.reply_token in (
+        "00000000000000000000000000000000",
+        "ffffffffffffffffffffffffffffffff",
+    ):
+        return
 
     try:
         # 1) ดาวน์โหลดรูปจาก LINE
         message_id = event.message.id
-        print("message_id:", message_id)
-
         message_content = line_bot_api.get_message_content(message_id)
-        print("Got message content from LINE")
 
         # 2) เซฟเป็นไฟล์ชั่วคราว
         with tempfile.NamedTemporaryFile(delete=False) as temp:
@@ -117,36 +133,47 @@ def handle_image(event):
                 temp.write(chunk)
             temp_path = temp.name
 
-        print("Saved temp image at:", temp_path)
+        # 3) Preprocess รูปให้ตรงกับโมเดล
+        img = preprocess_image(temp_path)
 
-        # 3) เตรียมรูปเข้าโมเดล
-        img_arr = preprocess_image(temp_path)
-
-        # 4) ทำนายด้วยโมเดล
-        pred = model.predict(img_arr)
-        print("Raw prediction:", pred)
-
-        class_id = int(np.argmax(pred, axis=1)[0])
-        probability = float(np.max(pred))
-
+        # 4) ให้โมเดลทำนาย
+        preds = model.predict(img)[0]  # ได้ array ยาว 3 ค่า
         classes = ["Normal", "Pneumonia", "Tuberculosis"]
-        result = classes[class_id]
+
+        # แปลงเป็นเปอร์เซ็นต์
+        probs = preds * 100.0
+        top_idx = int(np.argmax(preds))
+        top_class = classes[top_idx]
+
+        # 5) สร้างข้อความตอบกลับ
+        lines = []
+        for cls, p in zip(classes, probs):
+            lines.append(f"- {cls}: {p:.1f}%")
 
         reply_text = (
-            f"ผลวินิจฉัยจากภาพ X-ray: {result}\n"
-            f"ความมั่นใจของโมเดล: {probability * 100:.2f}%"
+            "ผลวิเคราะห์เบื้องต้นจากภาพ X-ray 🩻\n\n"
+            + "\n".join(lines)
+            + f"\n\nสรุป: โมเดลให้ความน่าจะเป็นสูงสุดว่าเป็นกลุ่ม **{top_class}**"
         )
 
+        # 6) ส่งผลกลับไปที่ LINE
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=reply_text)
         )
 
     except Exception as e:
-        # ถ้ามีปัญหา ให้ log ลง console และส่งข้อความกลับไปใน LINE
-        print("IMAGE ERROR:", e)
-
+        print("IMAGE PREDICT ERROR:", e)
+        # ถ้า error ให้ส่งข้อความขอโทษกลับไป
+        error_text = "ขอโทษค่ะ ระบบวิเคราะห์ภาพมีปัญหา โปรดลองใหม่อีกครั้งนะคะ"
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"ขอโทษค่ะ ระบบวิเคราะห์ภาพมีปัญหา: {e}")
+            TextSendMessage(text=error_text)
         )
+
+
+# -----------------------------
+# จุดเริ่มรันถ้ารันบนเครื่องตัวเอง (ไม่จำเป็นสำหรับ Render แต่มีไว้ไม่เสียหาย)
+# -----------------------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
