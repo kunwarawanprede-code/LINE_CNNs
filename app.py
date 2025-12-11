@@ -10,7 +10,7 @@ from PIL import Image
 
 app = Flask(__name__)
 
-# ====== โหลด TOKEN / SECRET ======
+# ====== โหลด TOKEN / SECRET จาก Environment ======
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
@@ -22,14 +22,10 @@ model = load_model("best_cnn_xray_E40.keras")
 
 # ====== ฟังก์ชัน Preprocess รูป X-ray ======
 def preprocess_image(path):
-    # แปลงเป็นขาวดำ
-    img = Image.open(path).convert("L")
-    # ปรับขนาดให้ตรงกับตอนเทรน
-    img = img.resize((224, 224))
-    # แปลงเป็น array และ normalize
-    img = np.array(img) / 255.0
-    # เพิ่มมิติให้เป็น (1, 224, 224, 1)
-    img = img.reshape(1, 224, 224, 1)
+    img = Image.open(path).convert("L")       # แปลงเป็นขาวดำ
+    img = img.resize((224, 224))              # ปรับขนาด
+    img = np.array(img) / 255.0               # Normalize
+    img = img.reshape(1, 224, 224, 1)         # เพิ่มมิติให้ตรงกับตอนเทรน
     return img
 
 
@@ -48,9 +44,15 @@ def callback():
 
     try:
         handler.handle(body, signature)
-    except Exception as e:
-        print("webhook error:", e)
+    except InvalidSignatureError:
+        # กรณี SECRET ไม่ตรง
+        print("❌ Invalid signature — ตรวจ CHANNEL_SECRET อีกครั้ง")
         abort(400)
+    except Exception as e:
+        # กัน error อื่น ๆ เช่น Invalid reply token
+        print("❌ webhook error:", e)
+        # ตอบ 200 กลับไปให้ LINE เพื่อกันระบบยิงซ้ำ
+        return "OK", 200
 
     return "OK", 200
 
