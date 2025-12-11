@@ -20,12 +20,16 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # ====== โหลดโมเดล ======
 model = load_model("best_cnn_xray_E40.keras")
 
-# Preprocess ฟังก์ชัน
+# ====== ฟังก์ชัน Preprocess รูป X-ray ======
 def preprocess_image(path):
-    img = Image.open(path).convert("L")  
-    img = img.resize((224, 224))      
-    img = np.array(img) / 255.0      
-    img = img.reshape(1, 224, 224, 1) 
+    # แปลงเป็นขาวดำ
+    img = Image.open(path).convert("L")
+    # ปรับขนาดให้ตรงกับตอนเทรน
+    img = img.resize((224, 224))
+    # แปลงเป็น array และ normalize
+    img = np.array(img) / 255.0
+    # เพิ่มมิติให้เป็น (1, 224, 224, 1)
+    img = img.reshape(1, 224, 224, 1)
     return img
 
 
@@ -37,7 +41,9 @@ def home():
 # ====== Webhook จาก LINE ======
 @app.route("/callback", methods=["POST"])
 def callback():
+    # 1) อ่าน signature จาก header
     signature = request.headers.get("X-Line-Signature", "")
+    # 2) อ่าน body (ข้อมูล event จาก LINE)
     body = request.get_data(as_text=True)
 
     try:
@@ -52,9 +58,19 @@ def callback():
 # ====== รับข้อความ (Echo) ======
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    # ไม่ตอบ event ทดสอบจาก LINE (ตอนกด Verify)
+    if event.reply_token in (
+        "00000000000000000000000000000000",
+        "ffffffffffffffffffffffffffffffff",
+    ):
+        return "OK"
+
     received_text = event.message.text
     reply = f"คุณพิมพ์ว่า: {received_text}"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=reply)
+    )
 
 
 # ====== รับรูป X-ray ======
@@ -64,12 +80,13 @@ def handle_image(event):
     message_id = event.message.id
     message_content = line_bot_api.get_message_content(message_id)
 
+    # เซฟเป็นไฟล์ชั่วคราว
     with tempfile.NamedTemporaryFile(delete=False) as temp:
         for chunk in message_content.iter_content():
             temp.write(chunk)
         temp_path = temp.name
 
-    # Preprocess
+    # Preprocess รูป
     img = preprocess_image(temp_path)
     pred = model.predict(img)
     class_id = np.argmax(pred)
@@ -79,4 +96,7 @@ def handle_image(event):
 
     # ส่งผลกลับ LINE
     reply_text = f"ผลวินิจฉัยจากภาพ X-ray: {result}"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=reply_text)
+    )
