@@ -1,179 +1,132 @@
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent,
-    TextMessage,
-    TextSendMessage,
-    ImageMessage,
-)
 import os
-import tempfile
+import io
 import numpy as np
-from tensorflow.keras.models import load_model
 from PIL import Image
 
+from flask import Flask, request, abort
+
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
+
+from tensorflow.keras.models import load_model
+
 # -----------------------------
-# สร้าง Flask app
+# CONFIG
 # -----------------------------
 app = Flask(__name__)
 
-# -----------------------------
-# โหลด TOKEN / SECRET จาก Environment Variables (ตั้งใน Render แล้ว)
-# -----------------------------
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
-if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
-    print("ERROR: CHANNEL_ACCESS_TOKEN หรือ CHANNEL_SECRET ไม่มีค่าใน Environment !!")
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    raise RuntimeError("Missing CHANNEL_ACCESS_TOKEN or CHANNEL_SECRET in environment variables.")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # -----------------------------
-# โหลดโมเดลที่เซฟไว้ใน GitHub (Render จะดึงมาด้วยเวลาดึง repo)
+# MODEL (โหลดครั้งเดียว)
 # -----------------------------
-# ชื่อไฟล์ต้องตรงกับไฟล์ใน repo เช่น best_cnn_xray_E40.keras
-model = load_model("best_cnn_xray_E40.keras")
+MODEL_PATH = os.getenv("MODEL_PATH", "model.h5")  # ถ้าไฟล์ชื่ออื่น ให้เปลี่ยน
+IMG_SIZE = int(os.getenv("IMG_SIZE", "224"))      # ขนาดภาพที่โมเดลรับเข้า
+
+print("Loading model...")
+model = load_model(MODEL_PATH)
+print("Model loaded!")
+
+# ชื่อคลาส (แก้ตามโมเดลของคุณ)
+CLASS_NAMES = ["NORMAL", "PNEUMONIA", "TB"]
+
+
+def preprocess_image(pil_img: Image.Image) -> np.ndarray:
+    """แปลง PIL image -> numpy tensor ตามรูปแบบโมเดล"""
+    pil_img = pil_img.convert("RGB")
+    pil_img = pil_img.resize((IMG_SIZE, IMG_SIZE))
+
+    arr = np.array(pil_img).astype("float32") / 255.0  # normalize 0-1
+    arr = np.expand_dims(arr, axis=0)                  # (1, H, W, 3)
+    return arr
+
+
+def predict(pil_img: Image.Image):
+    """คืน (label, confidence)"""
+    x = preprocess_image(pil_img)
+    probs = model.predict(x, verbose=0)[0]             # shape: (num_classes,)
+    idx = int(np.argmax(probs))
+    label = CLASS_NAMES[idx] if idx < len(CLASS_NAMES) else str(idx)
+    conf = float(probs[idx])
+    return label, conf
+
 
 # -----------------------------
-# ฟังก์ชัน Preprocess รูป X-ray ให้ตรงกับที่โมเดลต้องการ
-# ตอนนี้โมเดลต้องการ input ขนาด (224, 224, 3) = RGB
-# -----------------------------
-def preprocess_image(path):
-    # เปิดภาพเป็น RGB (3 ช่องสี) เพราะโมเดลต้องการ 3-channel
-    img = Image.open(path).convert("RGB")
-
-    # ปรับขนาดภาพให้ตรงกับตอนเทรน
-    img = img.resize((224, 224))
-
-    # แปลงเป็น array และ normalize ให้อยู่ในช่วง 0-1
-    img = np.array(img) / 255.0
-
-    # เพิ่มมิติ batch ให้เป็น (1, 224, 224, 3)
-    img = img.reshape(1, 224, 224, 3)
-
-    return img
-
-
-# -----------------------------
-# route สำหรับเช็คว่า server ยังอยู่ดี (Render health check)
-# เปิดใน browser: https://line-cnns-1.onrender.com/
+# ROUTES
 # -----------------------------
 @app.route("/", methods=["GET"])
-def home():
+def health():
     return "OK", 200
 
 
-# -----------------------------
-# Webhook ที่ LINE จะยิงมาหาเรา
-# -----------------------------
 @app.route("/callback", methods=["POST"])
 def callback():
-    # 1) อ่าน signature จาก header
     signature = request.headers.get("X-Line-Signature", "")
-
-    # 2) อ่าน body (ข้อมูล event จาก LINE)
     body = request.get_data(as_text=True)
 
-    # 3) ให้ handler ตรวจและกระจาย event
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        print("Invalid signature. Check CHANNEL_SECRET/LINE header.")
-        abort(400)
-    except Exception as e:
-        print("webhook error:", e)
         abort(400)
 
     return "OK", 200
 
 
-# =============================
-# Handler: ข้อความตัวอักษร (echo กลับไป)
-# =============================
+# -----------------------------
+# HANDLERS
+# -----------------------------
 @handler.add(MessageEvent, message=TextMessage)
-def handle_text_message(event):
-    # ไม่ตอบ event ทดสอบจาก LINE (ตอนกด Verify)
-    if event.reply_token in (
-        "00000000000000000000000000000000",
-        "ffffffffffffffffffffffffffffffff",
-    ):
-        return
+def handle_text(event: MessageEvent):
+    text = (event.message.text or "").strip()
 
-    user_text = event.message.text
-    reply = f"คุณพิมพ์ว่า: {user_text}"
+    # ตอบแชททั่วไป
+    if text.lower() in ["hi", "hello", "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ"]:
+        msg = "สวัสดีครับ ✅ ส่งรูป X-ray มาได้เลย เดี๋ยวผมช่วยทำนาย (NORMAL / PNEUMONIA / TB)"
+    else:
+        msg = "พิมพ์ได้ครับ ✅ แต่ถ้าจะให้ทำนาย ส่ง “รูปภาพ X-ray” มาได้เลย"
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply)
-    )
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
 
 
-# =============================
-# Handler: รับรูป X-ray แล้วให้โมเดลทำนาย
-# =============================
 @handler.add(MessageEvent, message=ImageMessage)
-def handle_image_message(event):
-    # ไม่ตอบ event ทดสอบจาก LINE เช่นตอน Verify
-    if event.reply_token in (
-        "00000000000000000000000000000000",
-        "ffffffffffffffffffffffffffffffff",
-    ):
-        return
-
+def handle_image(event: MessageEvent):
     try:
-        # 1) ดาวน์โหลดรูปจาก LINE
+        # 1) ดึงไฟล์รูปจาก LINE
         message_id = event.message.id
-        message_content = line_bot_api.get_message_content(message_id)
+        content = line_bot_api.get_message_content(message_id)
 
-        # 2) เซฟเป็นไฟล์ชั่วคราว
-        with tempfile.NamedTemporaryFile(delete=False) as temp:
-            for chunk in message_content.iter_content():
-                temp.write(chunk)
-            temp_path = temp.name
+        image_bytes = b""
+        for chunk in content.iter_content():
+            image_bytes += chunk
 
-        # 3) Preprocess รูปให้ตรงกับโมเดล
-        img = preprocess_image(temp_path)
+        # 2) เปิดเป็น PIL
+        pil_img = Image.open(io.BytesIO(image_bytes))
 
-        # 4) ให้โมเดลทำนาย
-        preds = model.predict(img)[0]  # ได้ array ยาว 3 ค่า
-        classes = ["Normal", "Pneumonia", "Tuberculosis"]
+        # 3) ทำนาย
+        label, conf = predict(pil_img)
 
-        # แปลงเป็นเปอร์เซ็นต์
-        probs = preds * 100.0
-        top_idx = int(np.argmax(preds))
-        top_class = classes[top_idx]
-
-        # 5) สร้างข้อความตอบกลับ
-        lines = []
-        for cls, p in zip(classes, probs):
-            lines.append(f"- {cls}: {p:.1f}%")
-
-        reply_text = (
-            "ผลวิเคราะห์เบื้องต้นจากภาพ X-ray 🩻\n\n"
-            + "\n".join(lines)
-            + f"\n\nสรุป: โมเดลให้ความน่าจะเป็นสูงสุดว่าเป็นกลุ่ม **{top_class}**"
-        )
-
-        # 6) ส่งผลกลับไปที่ LINE
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text)
-        )
+        # 4) ตอบกลับ
+        reply = f"ผลการทำนาย: {label}\nความมั่นใจ: {conf*100:.2f}%"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
     except Exception as e:
-        print("IMAGE PREDICT ERROR:", e)
-        # ถ้า error ให้ส่งข้อความขอโทษกลับไป
-        error_text = "ขอโทษค่ะ ระบบวิเคราะห์ภาพมีปัญหา โปรดลองใหม่อีกครั้งนะคะ"
+        # สำคัญ: กันบอทเงียบ + ช่วยดู log
+        print("ERROR in handle_image:", repr(e))
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=error_text)
+            TextSendMessage(text="เกิดข้อผิดพลาดตอนประมวลผลรูปภาพ ❌ ลองส่งใหม่อีกครั้งได้ไหม")
         )
 
 
-# -----------------------------
-# จุดเริ่มรันถ้ารันบนเครื่องตัวเอง (ไม่จำเป็นสำหรับ Render แต่มีไว้ไม่เสียหาย)
-# -----------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # Render จะไม่ใช้บรรทัดนี้ตอนรันด้วย gunicorn แต่ไว้เทส local ได้
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
