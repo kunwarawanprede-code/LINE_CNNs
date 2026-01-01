@@ -3,3 +3,4 @@ line-bot-sdk
 numpy
 Pillow
 tensorflow==2.15.0
+gunicorn
