@@ -60,6 +60,47 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
+# ---------------------------
+# ✅ Pretty Reply Helpers (เปอร์เซ็นต์ + อิโมจิน่ารัก)
+# ---------------------------
+def fmt_pct(x: float) -> str:
+    try:
+        return f"{x * 100:.1f}%"
+    except:
+        return "N/A"
+
+def build_pretty_reply(pred_label: str, probs_dict: dict) -> str:
+    # confidence ของคลาสที่ทำนาย
+    confidence = probs_dict.get(pred_label, max(probs_dict.values()) if probs_dict else 0.0)
+
+    # เรียงจากมาก -> น้อย
+    items = sorted(probs_dict.items(), key=lambda kv: kv[1], reverse=True)
+
+    emoji = {"Normal": "(laugh)(bako)", "Pneumonia": "(sparkle)(baku)", "TB": "(bawling)(baku)"}
+    label_th = {
+        "Normal": "ปกติ (Normal)",
+        "Pneumonia": "ปอดอักเสบ (Pneumonia)",
+        "TB": "วัณโรค (TB)"
+    }
+
+    lines = []
+    lines.append("🩺✨ ผลวิเคราะห์ภาพ X-ray ✨")
+    lines.append(f"🎯 ผลทำนาย: {emoji.get(pred_label,'📍')} {label_th.get(pred_label, pred_label)}")
+    lines.append(f"🔎 ความมั่นใจ: {fmt_pct(confidence)}")
+    lines.append("")
+    lines.append("📊💖 ความน่าจะเป็นของแต่ละกลุ่ม")
+
+    for k, v in items:
+        lines.append(f"• {emoji.get(k,'•')} {label_th.get(k,k)} → {fmt_pct(float(v))}")
+
+    if confidence < 0.70:
+        lines.append("")
+        lines.append("⚠️😿 ความมั่นใจยังไม่สูงมาก แนะนำส่งภาพที่ชัดขึ้น/ไม่เอียง/ไม่มีตัวหนังสือทับนะคะ")
+
+    lines.append("")
+    lines.append("📌 หมายเหตุ: เพื่อการทดลอง/การเรียนรู้ ไม่ใช่การวินิจฉัยทางการแพทย์")
+    return "\n".join(lines)
+
 def preprocess_image(image_bytes: bytes) -> np.ndarray:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = img.resize((int(IN_W), int(IN_H)))
@@ -125,11 +166,11 @@ def handle_text(event):
     msg = event.message.text.strip().lower()
     if msg in ["help", "วิธีใช้", "ใช้ยังไง", "ช่วยด้วย"]:
         reply = (
-            "ส่งรูป X-ray มาได้เลย แล้วฉันจะทำนายว่าเป็น Normal / Pneumonia / TB\n"
-            "หมายเหตุ: ผลลัพธ์เป็นการทดลอง ไม่ใช่การวินิจฉัยแพทย์"
+            "ส่งรูป X-ray มาได้เลย แล้วฉันจะทำนายว่าเป็น Normal / Pneumonia / TB 🩻✨\n"
+            "หมายเหตุ: ผลลัพธ์เป็นการทดลอง ไม่ใช่การวินิจฉัยแพทย์นะคะ 💖"
         )
     else:
-        reply = "ส่งรูป X-ray มาได้เลย 🙂"
+        reply = "ส่งรูป X-ray มาได้เลยน้า 🙂🩻"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 @handler.add(MessageEvent, message=ImageMessage)
@@ -139,21 +180,16 @@ def handle_image(event):
 
     try:
         label, conf, probs = predict(image_bytes)
+
+        # probs เป็น array -> แปลงเป็น dict ตาม CLASS_NAMES
         probs = probs.tolist() if hasattr(probs, "tolist") else list(probs)
+        probs_dict = {CLASS_NAMES[i]: float(probs[i]) for i in range(min(len(CLASS_NAMES), len(probs)))}
 
-        prob_lines = []
-        for i, p in enumerate(probs):
-            name = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"class_{i}"
-            prob_lines.append(f"- {name}: {float(p):.3f}")
+        # ✅ ตอบแบบสวย + เปอร์เซ็นต์ + อิโมจิ
+        reply = build_pretty_reply(label, probs_dict)
 
-        reply = (
-            f"ผลทำนาย: {label}\n"
-            f"ความมั่นใจ: {conf:.3f}\n\n"
-            f"รายละเอียดความน่าจะเป็น:\n" + "\n".join(prob_lines) +
-            "\n\nหมายเหตุ: เพื่อการทดลอง/การเรียนรู้ ไม่ใช่การวินิจฉัย"
-        )
     except Exception as e:
-        reply = f"ทำนายไม่สำเร็จ: {type(e).__name__}: {e}"
+        reply = f"😿 ทำนายไม่สำเร็จ: {type(e).__name__}: {e}"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
