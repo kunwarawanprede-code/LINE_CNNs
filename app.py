@@ -9,13 +9,18 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 
-from tensorflow.keras.models import load_model
+# ใช้ TFLite runtime (เบากว่า TensorFlow มาก เหมาะกับ Render Free)
+import tflite_runtime.interpreter as tflite
+
 
 # -----------------------------
-# CONFIG
+# Flask app
 # -----------------------------
 app = Flask(__name__)
 
+# -----------------------------
+# LINE Config (ตั้งใน Render -> Environment)
+# -----------------------------
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
@@ -26,33 +31,42 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # -----------------------------
-# MODEL (โหลดครั้งเดียว)
+# Model Config
 # -----------------------------
-MODEL_PATH = os.getenv("MODEL_PATH", "model.h5")  # ถ้าไฟล์ชื่ออื่น ให้เปลี่ยน
-IMG_SIZE = int(os.getenv("IMG_SIZE", "224"))      # ขนาดภาพที่โมเดลรับเข้า
+MODEL_PATH = os.getenv("MODEL_PATH", "model.tflite")
+IMG_SIZE = int(os.getenv("IMG_SIZE", "224"))  # ต้องตรงกับที่เทรน
+CLASS_NAMES = ["NORMAL", "PNEUMONIA", "TB"]   # แก้ชื่อให้ตรงกับคลาสของคุณ
 
-print("Loading model...")
-model = load_model(MODEL_PATH)
-print("Model loaded!")
-
-# ชื่อคลาส (แก้ตามโมเดลของคุณ)
-CLASS_NAMES = ["NORMAL", "PNEUMONIA", "TB"]
+# -----------------------------
+# Load TFLite model (โหลดครั้งเดียว)
+# -----------------------------
+print("Loading TFLite model...")
+interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+print("TFLite model loaded!")
 
 
 def preprocess_image(pil_img: Image.Image) -> np.ndarray:
-    """แปลง PIL image -> numpy tensor ตามรูปแบบโมเดล"""
+    """PIL -> np array (1, IMG_SIZE, IMG_SIZE, 3) float32 0-1"""
     pil_img = pil_img.convert("RGB")
     pil_img = pil_img.resize((IMG_SIZE, IMG_SIZE))
-
-    arr = np.array(pil_img).astype("float32") / 255.0  # normalize 0-1
-    arr = np.expand_dims(arr, axis=0)                  # (1, H, W, 3)
+    arr = np.array(pil_img).astype("float32") / 255.0
+    arr = np.expand_dims(arr, axis=0)
     return arr
 
 
-def predict(pil_img: Image.Image):
-    """คืน (label, confidence)"""
+def predict_tflite(pil_img: Image.Image):
+    """return (label, confidence)"""
     x = preprocess_image(pil_img)
-    probs = model.predict(x, verbose=0)[0]             # shape: (num_classes,)
+
+    # set input
+    interpreter.set_tensor(input_details[0]["index"], x)
+    interpreter.invoke()
+
+    # get output
+    probs = interpreter.get_tensor(output_details[0]["index"])[0]
     idx = int(np.argmax(probs))
     label = CLASS_NAMES[idx] if idx < len(CLASS_NAMES) else str(idx)
     conf = float(probs[idx])
@@ -60,7 +74,7 @@ def predict(pil_img: Image.Image):
 
 
 # -----------------------------
-# ROUTES
+# Routes
 # -----------------------------
 @app.route("/", methods=["GET"])
 def health():
@@ -81,17 +95,16 @@ def callback():
 
 
 # -----------------------------
-# HANDLERS
+# Handlers
 # -----------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event: MessageEvent):
     text = (event.message.text or "").strip()
 
-    # ตอบแชททั่วไป
     if text.lower() in ["hi", "hello", "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ"]:
-        msg = "สวัสดีครับ ✅ ส่งรูป X-ray มาได้เลย เดี๋ยวผมช่วยทำนาย (NORMAL / PNEUMONIA / TB)"
+        msg = "สวัสดีครับ ✅ ส่งรูป X-ray มาได้เลย เดี๋ยวทำนาย (NORMAL / PNEUMONIA / TB)"
     else:
-        msg = "พิมพ์ได้ครับ ✅ แต่ถ้าจะให้ทำนาย ส่ง “รูปภาพ X-ray” มาได้เลย"
+        msg = "พร้อมใช้งานครับ ✅ ถ้าจะทำนาย ส่งรูป X-ray มาได้เลย"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
 
@@ -99,7 +112,7 @@ def handle_text(event: MessageEvent):
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event: MessageEvent):
     try:
-        # 1) ดึงไฟล์รูปจาก LINE
+        # 1) ดึง bytes รูปจาก LINE
         message_id = event.message.id
         content = line_bot_api.get_message_content(message_id)
 
@@ -107,18 +120,18 @@ def handle_image(event: MessageEvent):
         for chunk in content.iter_content():
             image_bytes += chunk
 
-        # 2) เปิดเป็น PIL
+        # 2) เปิดภาพ
         pil_img = Image.open(io.BytesIO(image_bytes))
 
         # 3) ทำนาย
-        label, conf = predict(pil_img)
+        label, conf = predict_tflite(pil_img)
 
         # 4) ตอบกลับ
         reply = f"ผลการทำนาย: {label}\nความมั่นใจ: {conf*100:.2f}%"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
     except Exception as e:
-        # สำคัญ: กันบอทเงียบ + ช่วยดู log
+        # กันบอทเงียบ + ให้ดู Logs ได้
         print("ERROR in handle_image:", repr(e))
         line_bot_api.reply_message(
             event.reply_token,
@@ -127,6 +140,5 @@ def handle_image(event: MessageEvent):
 
 
 if __name__ == "__main__":
-    # Render จะไม่ใช้บรรทัดนี้ตอนรันด้วย gunicorn แต่ไว้เทส local ได้
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
