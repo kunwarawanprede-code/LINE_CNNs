@@ -9,15 +9,14 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 
-import tensorflow as tflite
+from tflite_runtime.interpreter import Interpreter  # ✅ ชัด ไม่ชน tensorflow
 
 # ---------------------------
-# Config (FIXED PATH)
+# Paths / Config
 # ---------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "model.tflite")
-
-CLASS_NAMES = ["Normal", "Pneumonia", "TB"]  # แก้ชื่อคลาสได้ตามโมเดลของเธอ
+MODEL_PATH = os.path.join(BASE_DIR, "model.tflite")  # ✅ ชี้แบบ absolute
+CLASS_NAMES = ["Normal", "Pneumonia", "TB"]
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
@@ -26,30 +25,23 @@ if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
     raise RuntimeError("Missing env vars: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET")
 
 # ---------------------------
-# Debug: show where we are + files in folder
-# ---------------------------
-print("BASE_DIR =", BASE_DIR)
-print("FILES IN BASE_DIR =", os.listdir(BASE_DIR))
-print("MODEL_PATH =", MODEL_PATH)
-print("MODEL EXISTS =", os.path.exists(MODEL_PATH))
-
-# ---------------------------
 # Load TFLite model once
 # ---------------------------
 if not os.path.exists(MODEL_PATH):
+    # debug ช่วยดูว่าในเครื่องจริงมีไฟล์อะไรบ้าง
+    files = os.listdir(BASE_DIR)
     raise FileNotFoundError(
         f"Model file not found: {MODEL_PATH}\n"
-        f"(ต้องอยู่ใน repo ระดับเดียวกับ app.py และชื่อไฟล์ต้องตรงว่า model.tflite)"
+        f"FILES IN BASE_DIR: {files}\n"
+        f"(ต้องชื่อ 'model.tflite' และอยู่โฟลเดอร์เดียวกับ app.py)"
     )
 
-interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+interpreter = Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
 
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-# infer input size from model
-# expected shape: [1, H, W, C] or [1, H, W]
 in_shape = input_details[0]["shape"]
 if len(in_shape) == 4:
     _, IN_H, IN_W, IN_C = in_shape
@@ -69,29 +61,21 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 def preprocess_image(image_bytes: bytes) -> np.ndarray:
-    """Convert bytes -> model input tensor"""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = img.resize((int(IN_W), int(IN_H)))
 
-    x = np.array(img, dtype=np.float32)  # (H,W,3)
+    x = np.array(img, dtype=np.float32)
 
-    # If model expects 1 channel, convert to grayscale
     if int(IN_C) == 1:
-        x = np.mean(x, axis=2, keepdims=True)  # (H,W,1)
+        x = np.mean(x, axis=2, keepdims=True)
 
-    # Normalize (0-1)
     x = x / 255.0
+    x = np.expand_dims(x, axis=0)
 
-    # Add batch
-    x = np.expand_dims(x, axis=0)  # (1,H,W,C)
-
-    # Cast to model dtype
     if IN_DTYPE == np.float32:
         return x.astype(np.float32)
     elif IN_DTYPE == np.uint8:
-        # uint8 quantized model: usually expects 0..255
-        x_u8 = (x * 255.0).clip(0, 255).astype(np.uint8)
-        return x_u8
+        return (x * 255.0).clip(0, 255).astype(np.uint8)
     else:
         return x.astype(IN_DTYPE)
 
@@ -100,11 +84,10 @@ def predict(image_bytes: bytes):
 
     interpreter.set_tensor(input_details[0]["index"], x)
     interpreter.invoke()
-
     y = interpreter.get_tensor(output_details[0]["index"])
     y = np.array(y).squeeze()
 
-    # If output is quantized uint8, dequantize using scale/zero_point
+    # dequantize ถ้าเป็น uint8
     if y.dtype == np.uint8:
         scale, zero_point = output_details[0].get("quantization", (1.0, 0))
         if scale and scale != 0:
@@ -112,7 +95,7 @@ def predict(image_bytes: bytes):
         else:
             y = y.astype(np.float32)
 
-    # If values don't sum ~1, apply softmax
+    # softmax ถ้าไม่รวม ~1
     if not np.isclose(np.sum(y), 1.0, atol=1e-2):
         e = np.exp(y - np.max(y))
         y = e / np.sum(e)
@@ -135,7 +118,6 @@ def callback():
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-
     return "OK"
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -152,16 +134,15 @@ def handle_text(event):
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    # download image content from LINE
     content = line_bot_api.get_message_content(event.message.id)
     image_bytes = b"".join(content.iter_content())
 
     try:
         label, conf, probs = predict(image_bytes)
+        probs = probs.tolist() if hasattr(probs, "tolist") else list(probs)
 
         prob_lines = []
-        probs_list = probs.tolist() if hasattr(probs, "tolist") else list(probs)
-        for i, p in enumerate(probs_list):
+        for i, p in enumerate(probs):
             name = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"class_{i}"
             prob_lines.append(f"- {name}: {float(p):.3f}")
 
