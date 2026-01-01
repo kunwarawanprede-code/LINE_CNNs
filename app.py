@@ -12,9 +12,11 @@ from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMess
 import tflite_runtime.interpreter as tflite
 
 # ---------------------------
-# Config
+# Config (FIXED PATH)
 # ---------------------------
-MODEL_PATH = "model.tflite"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model.tflite")
+
 CLASS_NAMES = ["Normal", "Pneumonia", "TB"]  # แก้ชื่อคลาสได้ตามโมเดลของเธอ
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
@@ -24,10 +26,21 @@ if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
     raise RuntimeError("Missing env vars: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET")
 
 # ---------------------------
+# Debug: show where we are + files in folder
+# ---------------------------
+print("BASE_DIR =", BASE_DIR)
+print("FILES IN BASE_DIR =", os.listdir(BASE_DIR))
+print("MODEL_PATH =", MODEL_PATH)
+print("MODEL EXISTS =", os.path.exists(MODEL_PATH))
+
+# ---------------------------
 # Load TFLite model once
 # ---------------------------
 if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Model file not found: {MODEL_PATH} (ต้องอยู่ใน repo ระดับเดียวกับ app.py)")
+    raise FileNotFoundError(
+        f"Model file not found: {MODEL_PATH}\n"
+        f"(ต้องอยู่ใน repo ระดับเดียวกับ app.py และชื่อไฟล์ต้องตรงว่า model.tflite)"
+    )
 
 interpreter = tflite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
@@ -46,7 +59,6 @@ elif len(in_shape) == 3:
 else:
     raise RuntimeError(f"Unsupported input shape: {in_shape}")
 
-# dtype
 IN_DTYPE = input_details[0]["dtype"]
 
 # ---------------------------
@@ -90,8 +102,6 @@ def predict(image_bytes: bytes):
     interpreter.invoke()
 
     y = interpreter.get_tensor(output_details[0]["index"])
-
-    # y shape could be (1,3) or (3,) etc.
     y = np.array(y).squeeze()
 
     # If output is quantized uint8, dequantize using scale/zero_point
@@ -102,7 +112,6 @@ def predict(image_bytes: bytes):
         else:
             y = y.astype(np.float32)
 
-    # Convert logits -> probabilities if needed
     # If values don't sum ~1, apply softmax
     if not np.isclose(np.sum(y), 1.0, atol=1e-2):
         e = np.exp(y - np.max(y))
@@ -110,7 +119,6 @@ def predict(image_bytes: bytes):
 
     idx = int(np.argmax(y))
     conf = float(y[idx])
-
     label = CLASS_NAMES[idx] if idx < len(CLASS_NAMES) else f"class_{idx}"
     return label, conf, y
 
@@ -150,9 +158,10 @@ def handle_image(event):
 
     try:
         label, conf, probs = predict(image_bytes)
-        # Format probabilities
+
         prob_lines = []
-        for i, p in enumerate(probs.tolist() if hasattr(probs, "tolist") else list(probs)):
+        probs_list = probs.tolist() if hasattr(probs, "tolist") else list(probs)
+        for i, p in enumerate(probs_list):
             name = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"class_{i}"
             prob_lines.append(f"- {name}: {float(p):.3f}")
 
