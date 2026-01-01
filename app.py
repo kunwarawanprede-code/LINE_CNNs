@@ -9,7 +9,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 
-import tflite_runtime.interpreter as tflite
+import tensorflow as tflite
 
 # ---------------------------
 # Config (FIXED PATH)
