@@ -1,6 +1,6 @@
 flask
-gunicorn
 line-bot-sdk
-tensorflow
-pillow
+Pillow
 numpy
+tflite-runtime
+gunicorn
