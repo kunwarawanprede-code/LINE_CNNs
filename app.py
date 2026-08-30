@@ -43,7 +43,12 @@ except Exception as e:
     print(f"Error loading model: {e}")
     model = None
 
-CLASS_NAMES = ['Normal', 'Pneumonia'] 
+# พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ
+CLASS_NAMES_TH = {
+    'Normal': 'ปกติ (Normal)',
+    'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)'
+}
+CLASS_NAMES = ['Normal', 'Pneumonia']
 
 # ---------------------------------------------------------
 # Route หลักสำหรับ Webhook
@@ -90,16 +95,27 @@ def handle_image(event):
 
         predictions = model.predict(img_array)
         
+        # คำนวณผลลัพธ์และความมั่นใจ
         if predictions.shape[-1] == 1:
             score = float(predictions[0][0])
             if score > 0.5:
-                result_text = f"ผลการวิเคราะห์: {CLASS_NAMES[1]} ({score*100:.2f}%)"
+                predicted_label = CLASS_NAMES_TH[CLASS_NAMES[1]]
+                confidence = score * 100
             else:
-                result_text = f"ผลการวิเคราะห์: {CLASS_NAMES[0]} ({(1-score)*100:.2f}%)"
+                predicted_label = CLASS_NAMES_TH[CLASS_NAMES[0]]
+                confidence = (1 - score) * 100
         else:
-            predicted_class = CLASS_NAMES[np.argmax(predictions[0])]
+            raw_class = CLASS_NAMES[np.argmax(predictions[0])]
+            predicted_label = CLASS_NAMES_TH.get(raw_class, raw_class)
             confidence = float(np.max(predictions[0])) * 100
-            result_text = f"ผลการวิเคราะห์: {predicted_class}\nความมั่นใจ: {confidence:.2f}%"
+
+        # จัดรูปแบบข้อความตอบกลับแบบเป็นทางการ
+        result_text = (
+            "📋 **ผลการวิเคราะห์ภาพถ่ายเอ็กซเรย์ทรวงอก**\n\n"
+            f"• **ผลการประมวลผล:** {predicted_label}\n"
+            f"• **ระดับความเชื่อมั่น:** {confidence:.2f}%\n\n"
+            "⚠️ *หมายเหตุ: ผลการวิเคราะห์นี้จัดทำโดยระบบปัญญาประดิษฐ์เพื่อการคัดกรองเบื้องต้นเท่านั้น ไม่สามารถใช้ทดแทนการวินิจฉัยโดยแพทย์ผู้เชี่ยวชาญได้*"
+        )
 
         # 5. ส่งข้อความตอบกลับไปยัง LINE
         line_bot_api.reply_message(
@@ -109,9 +125,15 @@ def handle_image(event):
 
     except Exception as e:
         print(f"Error handling image: {e}")
+        error_text = (
+            "ระบบไม่สามารถประมวลผลรูปภาพนี้ได้ในขณะนี้\n\n"
+            "ข้อแนะนำ:\n"
+            "1. ตรวจสอบไฟล์รูปภาพว่าเป็นภาพถ่ายเอ็กซเรย์ทรวงอกที่ชัดเจน\n"
+            "2. ลองส่งไฟล์รูปภาพใหม่อีกครั้ง"
+        )
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="เกิดข้อผิดพลาดในการประมวลผลรูปภาพ กรุณาลองใหม่อีกครั้ง")
+            TextSendMessage(text=error_text)
         )
 
 if __name__ == "__main__":
