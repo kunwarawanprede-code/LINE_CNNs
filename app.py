@@ -44,15 +44,15 @@ except Exception as e:
     model = None
 
 # ---------------------------------------------------------
-# พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ (เพิ่ม Tuberculosis)
+# พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ
 # ---------------------------------------------------------
 CLASS_NAMES_TH = {
-    'Normal': 'Normal',
-    'Pneumonia': 'Pneumonia',
-    'Tuberculosis': 'Tuberculosis'
+    'Normal': 'ปกติ (Normal)',
+    'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)',
+    'Tuberculosis': 'วัณโรคปอด (Tuberculosis)'
 }
 
-# ⚠️ เช็กเรียงลำดับให้ตรงกับตอน Train โมเดลนะครับ
+# ⚠️ เช็กเรียงลำดับให้ตรงกับตอน Train โมเดล
 CLASS_NAMES = ['Normal', 'Pneumonia', 'Tuberculosis']
 
 # ---------------------------------------------------------
@@ -100,21 +100,37 @@ def handle_image(event):
 
         predictions = model.predict(img_array)
         
-        # คำนวณผลลัพธ์แบบ Multi-class (เลือกคลาสที่มีค่าตระกูลสูงสุด)
+        # คำนวณผลลัพธ์แบบ Multi-class
         predicted_idx = int(np.argmax(predictions[0]))
-        raw_class = CLASS_NAMES[predicted_idx]
-        predicted_label = CLASS_NAMES_TH.get(raw_class, raw_class)
         confidence = float(predictions[0][predicted_idx]) * 100
 
-        # จัดรูปแบบข้อความตอบกลับแบบเป็นทางการ
-        result_text = (
-            "📋 **ผลการวิเคราะห์ภาพถ่ายเอ็กซเรย์ทรวงอก**\n\n"
-            f"• **ผลการประมวลผล:** {predicted_label}\n"
-            f"• **เปอเซ็นความมั่นใจ:** {confidence:.2f}%\n\n"
-            "⚠️ *หมายเหตุ: ผลการวิเคราะห์นี้จัดทำโดยระบบปัญญาประดิษฐ์เพื่อการคัดกรองเบื้องต้นเท่านั้น ไม่สามารถใช้ทดแทนการวินิจฉัยโดยแพทย์ผู้เชี่ยวชาญได้*"
-        )
+        # ---------------------------------------------------------
+        # 5. เช็กค่าความเชื่อมั่น (Threshold Check)
+        # ---------------------------------------------------------
+        CONFIDENCE_THRESHOLD = 50.0  # สามารถปรับเปลี่ยนระดับ % ขั้นต่ำตรงนี้ได้ครับ
 
-        # 5. ส่งข้อความตอบกลับไปยัง LINE
+        if confidence < CONFIDENCE_THRESHOLD:
+            result_text = (
+                "⚠️ **ไม่สามารถวิเคราะห์ภาพถ่ายนี้ได้**\n\n"
+                "ระบบไม่แน่ใจว่าภาพนี้เป็นภาพถ่ายเอ็กซเรย์ทรวงอก หรือลักษณะภาพไม่ตรงกับเงื่อนไขการตรวจวิเคราะห์\n\n"
+                "📌 **คำแนะนำ:**\n"
+                "• กรุณาส่งภาพถ่ายเอ็กซเรย์ทรวงอก (Chest X-ray) ที่มีความคมชัดและเห็นปอดชัดเจนใหม่อีกครั้ง"
+            )
+        else:
+            if predicted_idx < len(CLASS_NAMES):
+                raw_class = CLASS_NAMES[predicted_idx]
+                predicted_label = CLASS_NAMES_TH.get(raw_class, raw_class)
+            else:
+                predicted_label = f"คลาสที่ {predicted_idx}"
+
+            result_text = (
+                "📋 **ผลการวิเคราะห์ภาพถ่ายเอ็กซเรย์ทรวงอก**\n\n"
+                f"• **ผลการประมวลผล:** {predicted_label}\n"
+                f"• **ระดับความเชื่อมั่น:** {confidence:.2f}%\n\n"
+                "⚠️ *หมายเหตุ: ผลการวิเคราะห์นี้จัดทำโดยระบบปัญญาประดิษฐ์เพื่อการคัดกรองเบื้องต้นเท่านั้น ไม่สามารถใช้ทดแทนการวินิจฉัยโดยแพทย์ผู้เชี่ยวชาญได้*"
+            )
+
+        # 6. ส่งข้อความตอบกลับไปยัง LINE
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=result_text)
@@ -128,10 +144,13 @@ def handle_image(event):
             "1. ตรวจสอบไฟล์รูปภาพว่าเป็นภาพถ่ายเอ็กซเรย์ทรวงอกที่ชัดเจน\n"
             "2. ลองส่งไฟล์รูปภาพใหม่อีกครั้ง"
         )
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=error_text)
-        )
+        try:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=error_text)
+            )
+        except Exception as line_err:
+            print(f"Failed to send error reply to LINE: {line_err}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
