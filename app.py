@@ -1,10 +1,14 @@
 import os
 import io
 import numpy as np
+import cv2
 from PIL import Image, ImageOps
 from flask import Flask, request, abort
-import tensorflow as tf
-from tensorflow.keras.layers import InputLayer
+
+try:
+    import tflite_runtime.interpreter as tflite
+except ImportError:
+    import tensorflow.lite as tflite
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -12,38 +16,24 @@ from linebot.models import MessageEvent, ImageMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# ดึง Token และ Secret จาก Environment Variables ใน Render
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ---------------------------------------------------------
-# แก้ไขปัญหา Keras Version mismatch (FixedInputLayer)
-# ---------------------------------------------------------
-class FixedInputLayer(InputLayer):
-    def __init__(self, batch_shape=None, **kwargs):
-        kwargs.pop('optional', None)
-        if batch_shape is not None and 'shape' not in kwargs:
-            kwargs['shape'] = batch_shape[1:]
-        super().__init__(**kwargs)
-
-# ชื่อไฟล์โมเดล
-MODEL_PATH = 'lung_disease_mobilenetv2.h5'
+MODEL_PATH = 'model.tflite'
 
 try:
-    model = tf.keras.models.load_model(
-        MODEL_PATH,
-        custom_objects={'FixedInputLayer': FixedInputLayer, 'InputLayer': FixedInputLayer},
-        compile=False
-    )
-    print("Model loaded successfully!")
+    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    print("TFLite Model loaded successfully!")
 except Exception as e:
-    print(f"Error loading model: {e}")
-    model = None
+    print(f"Error loading TFLite model: {e}")
+    interpreter = None
 
-# พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ
 CLASS_NAMES_TH = {
     'Normal': 'ปกติ (Normal)',
     'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)'
@@ -51,8 +41,24 @@ CLASS_NAMES_TH = {
 CLASS_NAMES = ['Normal', 'Pneumonia']
 
 # ---------------------------------------------------------
-# Route หลักสำหรับ Webhook
+# ฟังก์ชันปรับแสงและคอนทราสต์ภาพเอ็กซเรย์ (CLAHE Enhancement)
 # ---------------------------------------------------------
+def enhance_xray_image(pil_img):
+    # 1. แปลง PIL Image เป็น numpy array (BGR สำหรับ OpenCV)
+    img_np = np.array(pil_img)
+    
+    # 2. แปลงเป็น Grayscale เพื่อปรับ Equalization
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    
+    # 3. ใช้ CLAHE เพิ่ม Contrast เฉพาะจุด ไม่ให้ภาพขาวจม
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced_gray = clahe.apply(gray)
+    
+    # 4. แปลงกลับเป็น RGB 3 channels
+    enhanced_rgb = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2RGB)
+    
+    return Image.fromarray(enhanced_rgb)
+
 @app.route("/", methods=['GET'])
 def index():
     return "Your service is live 🚀"
@@ -69,33 +75,33 @@ def callback():
 
     return 'OK'
 
-# ---------------------------------------------------------
-# ฟังก์ชันรับและประมวลผลรูปภาพจาก LINE
-# ---------------------------------------------------------
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     try:
-        # 1. ดึงไฟล์รูปภาพจาก LINE
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = io.BytesIO(message_content.content)
 
-        # 2. ปรับทิศทางภาพด้วย EXIF + แปลงเป็น RGB
+        # 1. โหลดภาพและแก้ EXIF Orientation
         img = Image.open(image_bytes)
         img = ImageOps.exif_transpose(img)
         img = img.convert('RGB')
 
-        # 3. Preprocess รูปภาพ (224x224)
+        # 2. ปรับแต่งโทนสี/คอนทราสต์ภาพก่อนส่งให้โมเดล
+        img = enhance_xray_image(img)
+
+        # 3. Resize และ Normalize
         img = img.resize((224, 224))
         img_array = np.array(img, dtype=np.float32) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        # 4. ให้โมเดลทำนายผล
-        if model is None:
-            raise Exception("Model is not loaded properly.")
+        # 4. ทำนายผล
+        if interpreter is None:
+            raise Exception("TFLite Model is not loaded properly.")
 
-        predictions = model.predict(img_array)
-        
-        # คำนวณผลลัพธ์และความมั่นใจ
+        interpreter.set_tensor(input_details[0]['index'], img_array)
+        interpreter.invoke()
+        predictions = interpreter.get_tensor(output_details[0]['index'])
+
         if predictions.shape[-1] == 1:
             score = float(predictions[0][0])
             if score > 0.5:
@@ -109,7 +115,6 @@ def handle_image(event):
             predicted_label = CLASS_NAMES_TH.get(raw_class, raw_class)
             confidence = float(np.max(predictions[0])) * 100
 
-        # จัดรูปแบบข้อความตอบกลับแบบเป็นทางการ
         result_text = (
             "📋 **ผลการวิเคราะห์ภาพถ่ายเอ็กซเรย์ทรวงอก**\n\n"
             f"• **ผลการประมวลผล:** {predicted_label}\n"
@@ -117,7 +122,6 @@ def handle_image(event):
             "⚠️ *หมายเหตุ: ผลการวิเคราะห์นี้จัดทำโดยระบบปัญญาประดิษฐ์เพื่อการคัดกรองเบื้องต้นเท่านั้น ไม่สามารถใช้ทดแทนการวินิจฉัยโดยแพทย์ผู้เชี่ยวชาญได้*"
         )
 
-        # 5. ส่งข้อความตอบกลับไปยัง LINE
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=result_text)
