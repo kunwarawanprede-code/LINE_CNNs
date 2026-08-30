@@ -108,6 +108,27 @@ def handle_image(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+import tensorflow as tf
+from tensorflow.keras.layers import InputLayer
+
+# 1. สร้าง Custom Class เพื่อแก้ปัญหา batch_shape ของ FixedInputLayer
+class FixedInputLayer(InputLayer):
+    def __init__(self, batch_shape=None, **kwargs):
+        if batch_shape is not None and 'shape' not in kwargs:
+            # แปลง batch_shape (เช่น [None, 224, 224, 3]) ให้เหลือแค่ shape (224, 224, 3)
+            kwargs['shape'] = batch_shape[1:]
+        super().__init__(**kwargs)
+
+# 2. โหลดโมเดลโดยแนบ custom_objects เข้าไป
+try:
+    model = tf.keras.models.load_model(
+        'lung_disease_mobilenetv2.h5', # ใส่ชื่อไฟล์ .h5 ของคุณตรงนี้
+        custom_objects={'FixedInputLayer': FixedInputLayer, 'InputLayer': FixedInputLayer}
+    )
+    print("Model loaded successfully!")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    model = None
 
   
       
