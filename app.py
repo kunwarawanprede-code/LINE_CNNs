@@ -47,9 +47,9 @@ except Exception as e:
 # พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ
 # ---------------------------------------------------------
 CLASS_NAMES_TH = {
-    'Normal': 'ปกติ (Normal)',
-    'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)',
-    'Tuberculosis': 'วัณโรคปอด (Tuberculosis)'
+    'Normal': 'Normal',
+    'Pneumonia': 'Pneumonia',
+    'Tuberculosis': 'Tuberculosis'
 }
 
 # ⚠️ เช็กเรียงลำดับให้ตรงกับตอน Train โมเดล
@@ -107,7 +107,7 @@ def handle_image(event):
         # ---------------------------------------------------------
         # 5. เช็กค่าความเชื่อมั่น (Threshold Check)
         # ---------------------------------------------------------
-        CONFIDENCE_THRESHOLD = 50.0  # สามารถปรับเปลี่ยนระดับ % ขั้นต่ำตรงนี้ได้ครับ
+        CONFIDENCE_THRESHOLD = 80.0  # สามารถปรับเปลี่ยนระดับ % ขั้นต่ำตรงนี้ได้ครับ
 
         if confidence < CONFIDENCE_THRESHOLD:
             result_text = (
