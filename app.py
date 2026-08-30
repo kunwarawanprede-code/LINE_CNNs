@@ -47,9 +47,9 @@ except Exception as e:
 # พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ (เพิ่ม Tuberculosis)
 # ---------------------------------------------------------
 CLASS_NAMES_TH = {
-    'Normal': 'ปกติ (Normal)',
-    'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)',
-    'Tuberculosis': 'วัณโรคปอด (Tuberculosis)'
+    'Normal': 'Normal',
+    'Pneumonia': 'Pneumonia',
+    'Tuberculosis': 'Tuberculosis'
 }
 
 # ⚠️ เช็กเรียงลำดับให้ตรงกับตอน Train โมเดลนะครับ
