@@ -1,5 +1,4 @@
-
-    import os
+import os
 import numpy as np
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -11,14 +10,12 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
 app = Flask(__name__)
 
-# ดึง Token และ Secret จาก Environment Variables ของ Render
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET', '')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 1. เรียกใช้โมเดล MobileNetV2
 MODEL_PATH = 'lung_disease_mobilenetv2.h5'
 model = load_model(MODEL_PATH)
 
@@ -41,7 +38,6 @@ def callback():
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
-    # ดึงรูปภาพจาก LINE
     message_content = line_bot_api.get_message_content(event.message.id)
     temp_img_path = f"/tmp/{event.message.id}.jpg"
     
@@ -49,20 +45,17 @@ def handle_image_message(event):
         for chunk in message_content.iter_content():
             f.write(chunk)
 
-    # โหลดและแปลงรูปภาพ
     img = image.load_img(temp_img_path, target_size=IMG_SIZE, color_mode='rgb')
     img_array = image.img_to_array(img)
     img_array = preprocess_input(img_array)
     img_array = np.expand_dims(img_array, axis=0)
 
-    # ทำนายผล
     preds = model.predict(img_array, verbose=0)[0]
     predicted_idx = np.argmax(preds)
     confidence = preds[predicted_idx] * 100
 
     reply_text = f"🩺 ผลวิเคราะห์: {labels_map[predicted_idx]}\n📈 ความมั่นใจ: {confidence:.1f}%"
     
-    # ลบไฟล์ชั่วคราว
     if os.path.exists(temp_img_path):
         os.remove(temp_img_path)
 
