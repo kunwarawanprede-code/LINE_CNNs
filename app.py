@@ -1,7 +1,7 @@
 import os
 import io
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from flask import Flask, request, abort
 import tensorflow as tf
 from tensorflow.keras.layers import InputLayer
@@ -23,9 +23,10 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # แก้ไขปัญหา Keras Version mismatch (FixedInputLayer)
 # ---------------------------------------------------------
 class FixedInputLayer(InputLayer):
-    def __init__(self, **kwargs):
-        kwargs.pop('batch_shape', None)
+    def __init__(self, batch_shape=None, **kwargs):
         kwargs.pop('optional', None)
+        if batch_shape is not None and 'shape' not in kwargs:
+            kwargs['shape'] = batch_shape[1:]
         super().__init__(**kwargs)
 
 # ชื่อไฟล์โมเดล
@@ -34,12 +35,13 @@ MODEL_PATH = 'lung_disease_mobilenetv2.h5'
 try:
     model = tf.keras.models.load_model(
         MODEL_PATH,
-        custom_objects={'InputLayer': FixedInputLayer},
+        custom_objects={'FixedInputLayer': FixedInputLayer, 'InputLayer': FixedInputLayer},
         compile=False
     )
     print("Model loaded successfully!")
 except Exception as e:
     print(f"Error loading model: {e}")
+    model = None
 
 CLASS_NAMES = ['Normal', 'Pneumonia'] 
 
@@ -71,14 +73,21 @@ def handle_image(event):
         # 1. ดึงไฟล์รูปภาพจาก LINE
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = io.BytesIO(message_content.content)
-        img = Image.open(image_bytes).convert('RGB')
 
-        # 2. Preprocess รูปภาพ (224x224)
+        # 2. ปรับทิศทางภาพด้วย EXIF + แปลงเป็น RGB
+        img = Image.open(image_bytes)
+        img = ImageOps.exif_transpose(img)
+        img = img.convert('RGB')
+
+        # 3. Preprocess รูปภาพ (224x224)
         img = img.resize((224, 224))
-        img_array = np.array(img) / 255.0
+        img_array = np.array(img, dtype=np.float32) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        # 3. ให้โมเดลทำนายผล
+        # 4. ให้โมเดลทำนายผล
+        if model is None:
+            raise Exception("Model is not loaded properly.")
+
         predictions = model.predict(img_array)
         
         if predictions.shape[-1] == 1:
@@ -92,7 +101,7 @@ def handle_image(event):
             confidence = float(np.max(predictions[0])) * 100
             result_text = f"ผลการวิเคราะห์: {predicted_class}\nความมั่นใจ: {confidence:.2f}%"
 
-        # 4. ส่งข้อความตอบกลับไปยัง LINE
+        # 5. ส่งข้อความตอบกลับไปยัง LINE
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=result_text)
@@ -108,27 +117,3 @@ def handle_image(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-import tensorflow as tf
-from tensorflow.keras.layers import InputLayer
-
-# 1. สร้าง Custom Class เพื่อแก้ปัญหา batch_shape ของ FixedInputLayer
-class FixedInputLayer(InputLayer):
-    def __init__(self, batch_shape=None, **kwargs):
-        if batch_shape is not None and 'shape' not in kwargs:
-            # แปลง batch_shape (เช่น [None, 224, 224, 3]) ให้เหลือแค่ shape (224, 224, 3)
-            kwargs['shape'] = batch_shape[1:]
-        super().__init__(**kwargs)
-
-# 2. โหลดโมเดลโดยแนบ custom_objects เข้าไป
-try:
-    model = tf.keras.models.load_model(
-        'lung_disease_mobilenetv2.h5', # ใส่ชื่อไฟล์ .h5 ของคุณตรงนี้
-        custom_objects={'FixedInputLayer': FixedInputLayer, 'InputLayer': FixedInputLayer}
-    )
-    print("Model loaded successfully!")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    model = None
-
-  
-      
