@@ -20,7 +20,7 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # ---------------------------------------------------------
-# แก้ไขปัญหา Keras Version mismatch
+# แก้ไขปัญหา Keras Version mismatch (FixedInputLayer)
 # ---------------------------------------------------------
 class FixedInputLayer(InputLayer):
     def __init__(self, **kwargs):
@@ -28,7 +28,7 @@ class FixedInputLayer(InputLayer):
         kwargs.pop('optional', None)
         super().__init__(**kwargs)
 
-# ชื่อไฟล์โมเดลของคุณ
+# ชื่อไฟล์โมเดล
 MODEL_PATH = 'lung_disease_mobilenetv2.h5'
 
 try:
@@ -73,7 +73,7 @@ def handle_image(event):
         image_bytes = io.BytesIO(message_content.content)
         img = Image.open(image_bytes).convert('RGB')
 
-        # 2. Preprocess รูปภาพ (ปรับขนาด 224x224 ตามมาตรฐาน MobileNetV2)
+        # 2. Preprocess รูปภาพ (224x224)
         img = img.resize((224, 224))
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
@@ -109,4 +109,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
+  
       
