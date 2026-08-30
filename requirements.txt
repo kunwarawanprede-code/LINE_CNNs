@@ -3,5 +3,3 @@ line-bot-sdk==3.13.0
 pillow==10.4.0
 numpy==1.26.4
 gunicorn==21.2.0
-tensorflow-cpu==2.15.0
-tf-keras==2.15.0
