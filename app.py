@@ -4,7 +4,9 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, ImageMessage, TextSendMessage
-from tensorflow.keras.models import load_model
+
+# สั่งให้ใช้ tf_keras โหลดโมเดลย้อนหลังเพื่อแก้ปัญหา InputLayer
+import tf_keras as keras
 from tensorflow.keras.preprocessing import image
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
@@ -17,7 +19,7 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 MODEL_PATH = 'lung_disease_mobilenetv2.h5'
-model = load_model(MODEL_PATH)
+model = keras.models.load_model(MODEL_PATH)
 
 labels_map = {0: 'Normal (ปอดปกติ)', 1: 'PNEUMONIA (ปอดบวม)', 2: 'TB (วัณโรค)'}
 IMG_SIZE = (224, 224)
@@ -64,3 +66,8 @@ def handle_image_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
+
+
+ 
