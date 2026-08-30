@@ -18,10 +18,16 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 MODEL_PATH = 'lung_disease_mobilenetv2.h5'
-model = keras.models.load_model(MODEL_PATH)
+model = None  # ไม่โหลดโมเดลทันที เพื่อป้องกัน RAM เต็ม
 
 labels_map = {0: 'Normal (ปอดปกติ)', 1: 'PNEUMONIA (ปอดบวม)', 2: 'TB (วัณโรค)'}
 IMG_SIZE = (224, 224)
+
+def get_model():
+    global model
+    if model is None:
+        model = keras.models.load_model(MODEL_PATH)
+    return model
 
 @app.route("/", methods=['GET'])
 def index():
@@ -36,7 +42,6 @@ def callback():
         handler.handle(body, signature)
     except Exception as e:
         print(f"Webhook Exception: {e}")
-        # คืนค่า 200 OK เสมอเพื่อป้องกัน Error 502 Bad Gateway ระหว่างการกด Verify บน LINE
         return 'OK', 200
         
     return 'OK', 200
@@ -56,7 +61,9 @@ def handle_image_message(event):
         img_array = preprocess_input(img_array)
         img_array = np.expand_dims(img_array, axis=0)
 
-        preds = model.predict(img_array, verbose=0)[0]
+        # เรียกใช้โมเดลเมื่อมีการส่งรูปเข้ามาเท่านั้น
+        current_model = get_model()
+        preds = current_model.predict(img_array, verbose=0)[0]
         predicted_idx = np.argmax(preds)
         confidence = preds[predicted_idx] * 100
 
@@ -72,10 +79,3 @@ def handle_image_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
-    
-
-
-
- 
