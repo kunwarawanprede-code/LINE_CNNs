@@ -43,12 +43,17 @@ except Exception as e:
     print(f"Error loading model: {e}")
     model = None
 
-# พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ
+# ---------------------------------------------------------
+# พจนานุกรมแปลชื่อคลาสเป็นภาษาไทยแบบทางการ (เพิ่ม Tuberculosis)
+# ---------------------------------------------------------
 CLASS_NAMES_TH = {
     'Normal': 'ปกติ (Normal)',
-    'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)'
+    'Pneumonia': 'ภาวะปอดอักเสบ/ปอดบวม (Pneumonia)',
+    'Tuberculosis': 'วัณโรคปอด (Tuberculosis)'
 }
-CLASS_NAMES = ['Normal', 'Pneumonia']
+
+# ⚠️ เช็กเรียงลำดับให้ตรงกับตอน Train โมเดลนะครับ
+CLASS_NAMES = ['Normal', 'Pneumonia', 'Tuberculosis']
 
 # ---------------------------------------------------------
 # Route หลักสำหรับ Webhook
@@ -95,19 +100,11 @@ def handle_image(event):
 
         predictions = model.predict(img_array)
         
-        # คำนวณผลลัพธ์และความมั่นใจ
-        if predictions.shape[-1] == 1:
-            score = float(predictions[0][0])
-            if score > 0.5:
-                predicted_label = CLASS_NAMES_TH[CLASS_NAMES[1]]
-                confidence = score * 100
-            else:
-                predicted_label = CLASS_NAMES_TH[CLASS_NAMES[0]]
-                confidence = (1 - score) * 100
-        else:
-            raw_class = CLASS_NAMES[np.argmax(predictions[0])]
-            predicted_label = CLASS_NAMES_TH.get(raw_class, raw_class)
-            confidence = float(np.max(predictions[0])) * 100
+        # คำนวณผลลัพธ์แบบ Multi-class (เลือกคลาสที่มีค่าตระกูลสูงสุด)
+        predicted_idx = int(np.argmax(predictions[0]))
+        raw_class = CLASS_NAMES[predicted_idx]
+        predicted_label = CLASS_NAMES_TH.get(raw_class, raw_class)
+        confidence = float(predictions[0][predicted_idx]) * 100
 
         # จัดรูปแบบข้อความตอบกลับแบบเป็นทางการ
         result_text = (
