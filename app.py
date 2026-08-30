@@ -1,81 +1,112 @@
 import os
+import io
 import numpy as np
-from flask import Flask, request, abort, jsonify
+from PIL import Image
+from flask import Flask, request, abort
+import tensorflow as tf
+from tensorflow.keras.layers import InputLayer
+
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, ImageMessage, TextSendMessage
 
-import tf_keras as keras
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-
 app = Flask(__name__)
 
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '')
-LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET', '')
+# ดึง Token และ Secret จาก Environment Variables ใน Render
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+# ---------------------------------------------------------
+# แก้ไขปัญหา Keras Version mismatch
+# ---------------------------------------------------------
+class FixedInputLayer(InputLayer):
+    def __init__(self, **kwargs):
+        kwargs.pop('batch_shape', None)
+        kwargs.pop('optional', None)
+        super().__init__(**kwargs)
+
+# ชื่อไฟล์โมเดลของคุณ
 MODEL_PATH = 'lung_disease_mobilenetv2.h5'
-model = None  # ไม่โหลดโมเดลทันที เพื่อป้องกัน RAM เต็ม
 
-labels_map = {0: 'Normal (ปอดปกติ)', 1: 'PNEUMONIA (ปอดบวม)', 2: 'TB (วัณโรค)'}
-IMG_SIZE = (224, 224)
+try:
+    model = tf.keras.models.load_model(
+        MODEL_PATH,
+        custom_objects={'InputLayer': FixedInputLayer},
+        compile=False
+    )
+    print("Model loaded successfully!")
+except Exception as e:
+    print(f"Error loading model: {e}")
 
-def get_model():
-    global model
-    if model is None:
-        model = keras.models.load_model(MODEL_PATH)
-    return model
+CLASS_NAMES = ['Normal', 'Pneumonia'] 
 
+# ---------------------------------------------------------
+# Route หลักสำหรับ Webhook
+# ---------------------------------------------------------
 @app.route("/", methods=['GET'])
 def index():
-    return "LINE Bot Model Service is Running!"
+    return "Your service is live 🚀"
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers.get('X-Line-Signature', '')
+    signature = request.headers.get('X-Line-Signature')
     body = request.get_data(as_text=True)
-    
+
     try:
         handler.handle(body, signature)
-    except Exception as e:
-        print(f"Webhook Exception: {e}")
-        return 'OK', 200
-        
-    return 'OK', 200
+    except InvalidSignatureError:
+        abort(400)
 
+    return 'OK'
+
+# ---------------------------------------------------------
+# ฟังก์ชันรับและประมวลผลรูปภาพจาก LINE
+# ---------------------------------------------------------
 @handler.add(MessageEvent, message=ImageMessage)
-def handle_image_message(event):
+def handle_image(event):
     try:
+        # 1. ดึงไฟล์รูปภาพจาก LINE
         message_content = line_bot_api.get_message_content(event.message.id)
-        temp_img_path = f"/tmp/{event.message.id}.jpg"
-        
-        with open(temp_img_path, 'wb') as f:
-            for chunk in message_content.iter_content():
-                f.write(chunk)
+        image_bytes = io.BytesIO(message_content.content)
+        img = Image.open(image_bytes).convert('RGB')
 
-        img = image.load_img(temp_img_path, target_size=IMG_SIZE, color_mode='rgb')
-        img_array = image.img_to_array(img)
-        img_array = preprocess_input(img_array)
+        # 2. Preprocess รูปภาพ (ปรับขนาด 224x224 ตามมาตรฐาน MobileNetV2)
+        img = img.resize((224, 224))
+        img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        # เรียกใช้โมเดลเมื่อมีการส่งรูปเข้ามาเท่านั้น
-        current_model = get_model()
-        preds = current_model.predict(img_array, verbose=0)[0]
-        predicted_idx = np.argmax(preds)
-        confidence = preds[predicted_idx] * 100
-
-        reply_text = f"🩺 ผลวิเคราะห์: {labels_map[predicted_idx]}\n📈 ความมั่นใจ: {confidence:.1f}%"
+        # 3. ให้โมเดลทำนายผล
+        predictions = model.predict(img_array)
         
-        if os.path.exists(temp_img_path):
-            os.remove(temp_img_path)
+        if predictions.shape[-1] == 1:
+            score = float(predictions[0][0])
+            if score > 0.5:
+                result_text = f"ผลการวิเคราะห์: {CLASS_NAMES[1]} ({score*100:.2f}%)"
+            else:
+                result_text = f"ผลการวิเคราะห์: {CLASS_NAMES[0]} ({(1-score)*100:.2f}%)"
+        else:
+            predicted_class = CLASS_NAMES[np.argmax(predictions[0])]
+            confidence = float(np.max(predictions[0])) * 100
+            result_text = f"ผลการวิเคราะห์: {predicted_class}\nความมั่นใจ: {confidence:.2f}%"
 
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-    except Exception as err:
-        print(f"Error handling image: {err}")
+        # 4. ส่งข้อความตอบกลับไปยัง LINE
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=result_text)
+        )
+
+    except Exception as e:
+        print(f"Error handling image: {e}")
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="เกิดข้อผิดพลาดในการประมวลผลรูปภาพ กรุณาลองใหม่อีกครั้ง")
+        )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
+      
